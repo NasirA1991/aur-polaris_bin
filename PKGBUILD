@@ -13,7 +13,7 @@ source=(
 noextract=("Polaris-arch-x86_64.pkg.tar.zst")
 sha256sums=('SKIP')
 
-install=polaris-bin.install
+install=polaris-gamestream-bin.install
 
 package() {
   bsdtar -xf Polaris-arch-x86_64.pkg.tar.zst -C "$pkgdir"
