@@ -15,24 +15,41 @@ jobs:
 
       - name: Fetch latest Polaris release
         run: |
-          LATEST_VER=$(curl -s https://api.github.com/repos/papi-ux/polaris/releases/latest | jq -r '.tag_name')
+          set -e
 
+          LATEST_VER=$(curl -s https://api.github.com/repos/papi-ux/polaris/releases/latest | jq -r '.tag_name')
           echo "Latest release: $LATEST_VER"
 
           VERSION="${LATEST_VER#v}"
 
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
 
+      # IMPORTANT: ensure workspace is clean (prevents blob leak to AUR)
+      - name: Clean workspace (prevent large file push)
+        run: |
+          rm -f *.pkg.tar.zst || true
+          rm -rf src pkg || true
+
+      - name: Generate .SRCINFO
+        run: |
+          sudo pacman -Sy --noconfirm pacman-contrib
+          makepkg --printsrcinfo > .SRCINFO
+
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3
         with:
           pkgname: polaris-gamestream-bin
           pkgbuild: ./PKGBUILD
+
+          # Only safe packaging files
           assets: |
             PKGBUILD
             .SRCINFO
             polaris-gamestream-bin.install
+
           SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_username: ${{ secrets.AUR_COMMIT_USERNAME }}
           commit_email: ${{ secrets.AUR_COMMIT_EMAIL }}
-          updpkgsums: true
+
+          # DISABLED to avoid accidental checksum side-effects with binary sources
+          updpkgsums: false
