@@ -2,7 +2,7 @@ name: Deploy to AUR
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: "0 */2 * * *"
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch latest Polaris release
+      - name: Get latest Polaris version
+        id: version
         run: |
           set -e
 
@@ -21,19 +22,17 @@ jobs:
           echo "Latest release: $LATEST_VER"
 
           VERSION="${LATEST_VER#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+      - name: Update PKGBUILD version
+        run: |
+          set -e
 
-      # IMPORTANT: ensure workspace is clean (prevents blob leak to AUR)
-      - name: Clean workspace (prevent large file push)
+          sed -i "s/^pkgver=.*/pkgver=${{ steps.version.outputs.version }}/" PKGBUILD
+
+      - name: Clean build artifacts (important)
         run: |
           rm -f *.pkg.tar.zst || true
-          rm -rf src pkg || true
-
-      - name: Generate .SRCINFO
-        run: |
-          sudo pacman -Sy --noconfirm pacman-contrib
-          makepkg --printsrcinfo > .SRCINFO
 
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3
@@ -41,15 +40,15 @@ jobs:
           pkgname: polaris-gamestream-bin
           pkgbuild: ./PKGBUILD
 
-          # Only safe packaging files
           assets: |
             PKGBUILD
-            .SRCINFO
             polaris-gamestream-bin.install
+            .SRCINFO
 
           SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_username: ${{ secrets.AUR_COMMIT_USERNAME }}
           commit_email: ${{ secrets.AUR_COMMIT_EMAIL }}
 
-          # DISABLED to avoid accidental checksum side-effects with binary sources
-          updpkgsums: false
+          updpkgsums: true
+          allow_empty_commits: false
+          force_push: false
