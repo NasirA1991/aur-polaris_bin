@@ -27,7 +27,11 @@ jobs:
         uses: KSXGitHub/github-actions-deploy-aur@v3
         with:
           pkgname: polaris-gamestream-bin
-          PKGBUILD: ./PKGBUILD
+          pkgbuild: ./PKGBUILD
+          assets: |
+            PKGBUILD
+            .SRCINFO
+            polaris-gamestream-bin.install
           SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_username: ${{ secrets.AUR_COMMIT_USERNAME }}
           commit_email: ${{ secrets.AUR_COMMIT_EMAIL }}
