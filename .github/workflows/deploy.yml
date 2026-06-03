@@ -13,24 +13,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get latest Polaris version
+      - name: Get latest version
         run: |
           set -e
-
           LATEST_VER=$(curl -s https://api.github.com/repos/papi-ux/polaris/releases/latest | jq -r '.tag_name')
           echo "Latest release: $LATEST_VER"
-
           VERSION="${LATEST_VER#v}"
-
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
 
-      - name: Ensure clean tree (IMPORTANT)
+      - name: Ensure NO binary leakage (IMPORTANT)
         run: |
-          # remove any accidental binaries or downloads
-          find . -maxdepth 1 -type f -name "*.pkg.tar.zst" -delete || true
-          find . -maxdepth 1 -type f -name "*.tar.*" -delete || true
+          rm -rf *.pkg.tar.zst *.tar.* *.zip || true
+          git clean -fdx
 
-      - name: Regenerate .SRCINFO
+      - name: Deploy to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v3
         with:
           pkgname: polaris-gamestream-bin
@@ -42,4 +38,5 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_username: ${{ secrets.AUR_COMMIT_USERNAME }}
           commit_email: ${{ secrets.AUR_COMMIT_EMAIL }}
-          updpkgsums: true
+          updpkgsums: false
+          allow_empty_commits: false
