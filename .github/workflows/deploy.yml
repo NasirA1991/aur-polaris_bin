@@ -1,0 +1,36 @@
+name: Deploy to AUR
+
+on:
+schedule:
+- cron: '0 */2 * * *'
+workflow_dispatch:
+
+jobs:
+deploy:
+runs-on: ubuntu-latest
+
+```
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+
+  - name: Fetch latest Polaris release
+    run: |
+      LATEST_VER=$(curl -s https://api.github.com/repos/papi-ux/polaris/releases/latest | jq -r .tag_name)
+
+      echo "Latest release: $LATEST_VER"
+
+      VERSION="${LATEST_VER#v}"
+
+      sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+
+  - name: Publish to AUR
+    uses: KSXGitHub/github-actions-deploy-aur@v3
+    with:
+      pkgname: polaris-bin
+      PKGBUILD: ./PKGBUILD
+      SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      commit_username: ${{ secrets.AUR_COMMIT_USERNAME }}
+      commit_email: ${{ secrets.AUR_COMMIT_EMAIL }}
+      updpkgsums: true
+```
