@@ -1,4 +1,4 @@
-pkgbase = polaris-bin
+pkgbase = polaris-gamestream-bin
         pkgdesc = Linux-first game streaming host
         pkgver = 1.1.0
         pkgrel = 1
