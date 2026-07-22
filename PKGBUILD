@@ -12,7 +12,7 @@ sha256sums=('a7e87b833f93893823b1d074940e226a2cd6c54a13c3aedfb9c1085f1afaba41')
 install=polaris-gamestream-bin.install
 
 package() {
-  bsdtar -xf "Polaris-arch-x86_64-1.3.1.pkg.tar.zst"" -C "$pkgdir"
+  bsdtar -xf "Polaris-arch-x86_64-1.3.1.pkg.tar.zst" -C "$pkgdir"
   # ensure no pacman metadata leaks
   find "$pkgdir" -name ".PKGINFO" -delete
   find "$pkgdir" -name ".BUILDINFO" -delete
