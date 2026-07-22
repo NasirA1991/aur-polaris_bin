@@ -1,41 +1,104 @@
 name: Deploy to AUR
-
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
-
+permissions:
+  contents: write   # needed to commit the version bump back to this repo
+concurrency:
+  group: deploy-to-aur
+  cancel-in-progress: false
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get latest version
+      - name: Get latest Polaris release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          LATEST_VER=$(curl -s https://api.github.com/repos/papi-ux/polaris/releases/latest | jq -r '.tag_name')
-          echo "Latest release: $LATEST_VER"
-          VERSION="${LATEST_VER#v}"
-          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          JSON=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/papi-ux/polaris/releases/latest)
+          VERSION=$(echo "$JSON" | jq -r '.tag_name')
+          CLEAN_VERSION="${VERSION#v}"
+          if [ -z "$CLEAN_VERSION" ] || [ "$CLEAN_VERSION" = "null" ]; then
+            echo "Could not determine latest version, aborting." >&2
+            exit 1
+          fi
+          echo "version=$CLEAN_VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure NO binary leakage (IMPORTANT)
+      - name: Check if update is needed
+        id: check
         run: |
-          rm -rf *.pkg.tar.zst *.tar.* *.zip || true
+          set -e
+          CURRENT=$(grep -Po '^pkgver=\K.*' PKGBUILD)
+          LATEST="${{ steps.release.outputs.version }}"
+          echo "current=$CURRENT"
+          echo "latest=$LATEST"
+          if [ "$CURRENT" = "$LATEST" ]; then
+            echo "update=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "update=true" >> "$GITHUB_OUTPUT"
+
+      - name: Update PKGBUILD + SHA256
+        if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -e
+          VERSION="${{ steps.release.outputs.version }}"
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          # Only reset pkgrel to 1 on a genuine upstream version bump, so a
+          # manual workflow_dispatch re-run (e.g. for a packaging-only fix)
+          # doesn't stomp a deliberate pkgrel bump back to 1.
+          if [ "${{ steps.check.outputs.update }}" = "true" ]; then
+            sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+          fi
+          # download the actual release asset so we can hash it -- do NOT
+          # rely on sha256sums=('SKIP'), which disables integrity checking
+          # entirely and is why this had no verification before
+          FILENAME="Polaris-arch-x86_64-${VERSION}.pkg.tar.zst"
+          URL="https://github.com/papi-ux/polaris/releases/download/v${VERSION}/Polaris-arch-x86_64.pkg.tar.zst"
+          curl -fL --retry 3 -o "$FILENAME" "$URL"
+          SHA256=$(sha256sum "$FILENAME" | awk '{print $1}')
+          sed -i "s|^sha256sums=.*|sha256sums=('$SHA256')|" PKGBUILD
+          # update the source filename to match (versioned, so AUR helpers
+          # never reuse a stale cached file from a previous pkgver)
+          sed -i "s|^source=(.*|source=(\n  \"${FILENAME}::${URL}\"|" PKGBUILD
+          sed -i "s|^noextract=(.*|noextract=(\"${FILENAME}\")|" PKGBUILD
+          sed -i "s|bsdtar -xf Polaris-arch-x86_64.pkg.tar.zst|bsdtar -xf \"${FILENAME}\"|" PKGBUILD
+
+      - name: Commit version bump back to repo
+        if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD
+          if git diff --staged --quiet; then
+            echo "No PKGBUILD changes to commit."
+          else
+            git commit -m "Update PKGBUILD (pkgver ${{ steps.release.outputs.version }})"
+            git push
+          fi
+
+      - name: Clean workspace
+        run: |
+          rm -f Polaris-arch-x86_64-*.pkg.tar.zst || true
           git clean -fdx
 
       - name: Deploy to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v3
+        if: steps.check.outputs.update == 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: polaris-gamestream-bin
           pkgbuild: ./PKGBUILD
           assets: |
-            PKGBUILD
-            .SRCINFO
             polaris-gamestream-bin.install
-          SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_username: ${{ secrets.AUR_COMMIT_USERNAME }}
           commit_email: ${{ secrets.AUR_COMMIT_EMAIL }}
           updpkgsums: false
