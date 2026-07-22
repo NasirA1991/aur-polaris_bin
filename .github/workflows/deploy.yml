@@ -82,6 +82,11 @@ jobs:
             echo "No PKGBUILD changes to commit."
           else
             git commit -m "Update PKGBUILD (pkgver ${{ steps.release.outputs.version }})"
+            # Rebase onto whatever's currently on origin/main before pushing.
+            # Prevents a race where a manual push to main between checkout
+            # and this push would otherwise cause a rejected non-fast-forward
+            # push (as just happened).
+            git pull --rebase origin main
             git push
           fi
 
