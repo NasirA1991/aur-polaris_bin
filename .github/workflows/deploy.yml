@@ -67,9 +67,9 @@ jobs:
           sed -i "s|^sha256sums=.*|sha256sums=('$SHA256')|" PKGBUILD
           # update the source filename to match (versioned, so AUR helpers
           # never reuse a stale cached file from a previous pkgver)
-          sed -i "s|^source=(.*|source=(\n  \"${FILENAME}::${URL}\"|" PKGBUILD
+          sed -i "s|^source=(.*|source=(\"${FILENAME}::${URL}\")|" PKGBUILD
           sed -i "s|^noextract=(.*|noextract=(\"${FILENAME}\")|" PKGBUILD
-          sed -i "s|bsdtar -xf Polaris-arch-x86_64.pkg.tar.zst|bsdtar -xf \"${FILENAME}\"|" PKGBUILD
+          sed -i "s|bsdtar -xf [^ ]*\.pkg\.tar\.zst|bsdtar -xf \"${FILENAME}\"|" PKGBUILD
 
       - name: Commit version bump back to repo
         if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
@@ -91,7 +91,7 @@ jobs:
           git clean -fdx
 
       - name: Deploy to AUR
-        if: steps.check.outputs.update == 'true'
+        if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
         uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
         with:
           pkgname: polaris-gamestream-bin
