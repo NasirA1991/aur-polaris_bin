@@ -69,7 +69,11 @@ jobs:
           # never reuse a stale cached file from a previous pkgver)
           sed -i "s|^source=(.*|source=(\"${FILENAME}::${URL}\")|" PKGBUILD
           sed -i "s|^noextract=(.*|noextract=(\"${FILENAME}\")|" PKGBUILD
-          sed -i "s|bsdtar -xf [^ ]*\.pkg\.tar\.zst|bsdtar -xf \"${FILENAME}\"|" PKGBUILD
+          # Match the FULL quoted argument (opening " through closing ") so
+          # nothing gets left dangling behind the replacement -- the prior
+          # pattern only matched up through ".zst" and left the original
+          # closing quote in place, producing a doubled `""` every run.
+          sed -i "s|bsdtar -xf \"[^\"]*\.pkg\.tar\.zst\"|bsdtar -xf \"${FILENAME}\"|" PKGBUILD
 
       - name: Commit version bump back to repo
         if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
@@ -85,7 +89,7 @@ jobs:
             # Rebase onto whatever's currently on origin/main before pushing.
             # Prevents a race where a manual push to main between checkout
             # and this push would otherwise cause a rejected non-fast-forward
-            # push (as just happened).
+            # push.
             git pull --rebase origin main
             git push
           fi
