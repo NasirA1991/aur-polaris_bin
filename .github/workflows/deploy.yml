@@ -88,11 +88,23 @@ jobs:
           # and only ever add to that combined set -- extra-depends.txt is
           # never auto-pruned, so a fix like today's isn't silently undone by
           # the next scheduled run.
-          UPSTREAM_DEPS=$(bsdtar -xOf "$FILENAME" .PKGINFO 2>/dev/null \
-            | sed -n 's/^depend = //p' || true)
+
+          # Ensure bsdtar is available on the runner -- it's present by
+          # default on Arch but NOT guaranteed on ubuntu-latest, which is
+          # why .PKGINFO extraction silently returned nothing before.
+          if ! command -v bsdtar >/dev/null 2>&1; then
+            echo "::notice::bsdtar not found on runner, installing libarchive-tools"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libarchive-tools
+          fi
+
+          UPSTREAM_DEPS=$(bsdtar -xOf "$FILENAME" .PKGINFO 2> bsdtar_err.log \
+            | sed -n 's/^depend = //p')
 
           if [ -z "$UPSTREAM_DEPS" ]; then
             echo "::warning::Could not read .PKGINFO from the release asset; leaving depends=() untouched this run."
+            echo "bsdtar stderr was:"
+            cat bsdtar_err.log
           else
             EXTRA_DEPS=$(sed -e '/^\s*#/d' -e '/^\s*$/d' extra-depends.txt 2>/dev/null || true)
             ALL_DEPS=$(printf '%s\n%s\n' "$UPSTREAM_DEPS" "$EXTRA_DEPS" | sed '/^\s*$/d' | sort -u)
@@ -118,6 +130,8 @@ jobs:
               echo "::warning::Computed depends=() line looked malformed, leaving PKGBUILD's existing depends=() untouched: $DEPENDS_LINE"
             fi
           fi
+
+          rm -f bsdtar_err.log
         id: depends
 
       - name: Commit version bump back to repo
