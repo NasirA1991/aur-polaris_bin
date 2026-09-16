@@ -45,7 +45,7 @@ jobs:
           fi
           echo "update=true" >> "$GITHUB_OUTPUT"
 
-      - name: Update PKGBUILD + SHA256
+      - name: Update PKGBUILD + SHA256 + depends
         if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -e
@@ -75,6 +75,51 @@ jobs:
           # closing quote in place, producing a doubled `""` every run.
           sed -i "s|bsdtar -xf \"[^\"]*\.pkg\.tar\.zst\"|bsdtar -xf \"${FILENAME}\"|" PKGBUILD
 
+          # --- Sync depends=() from upstream metadata, without trusting it blindly ---
+          #
+          # Upstream's own .PKGINFO has already been shown to be incomplete: it
+          # did not declare libayatana-appindicator, even though
+          # `polaris --setup-host` fails without it (user-reported on 1.4.7).
+          # So we never let this step overwrite depends=() with ONLY what
+          # upstream declares. Instead we union:
+          #   1. whatever upstream's .PKGINFO says (`depend = ...` lines)
+          #   2. extra-depends.txt in this repo, a packager-maintained list of
+          #      known-required deps that upstream fails to declare
+          # and only ever add to that combined set -- extra-depends.txt is
+          # never auto-pruned, so a fix like today's isn't silently undone by
+          # the next scheduled run.
+          UPSTREAM_DEPS=$(bsdtar -xOf "$FILENAME" .PKGINFO 2>/dev/null \
+            | sed -n 's/^depend = //p' || true)
+
+          if [ -z "$UPSTREAM_DEPS" ]; then
+            echo "::warning::Could not read .PKGINFO from the release asset; leaving depends=() untouched this run."
+          else
+            EXTRA_DEPS=$(sed -e '/^\s*#/d' -e '/^\s*$/d' extra-depends.txt 2>/dev/null || true)
+            ALL_DEPS=$(printf '%s\n%s\n' "$UPSTREAM_DEPS" "$EXTRA_DEPS" | sed '/^\s*$/d' | sort -u)
+
+            DEPENDS_ARGS=()
+            while IFS= read -r dep; do
+              DEPENDS_ARGS+=("'$dep'")
+            done <<< "$ALL_DEPS"
+
+            DEPENDS_LINE="depends=(${DEPENDS_ARGS[*]})"
+
+            # Sanity check before writing: must look like a well-formed
+            # bash array assignment, or bail rather than risk a malformed
+            # PKGBUILD getting pushed to the AUR.
+            if [[ "$DEPENDS_LINE" =~ ^depends=\(\'.+\'\)$ ]]; then
+              OLD_DEPENDS_LINE=$(grep '^depends=' PKGBUILD || true)
+              sed -i "s|^depends=.*|$DEPENDS_LINE|" PKGBUILD
+              echo "Resolved depends: $DEPENDS_LINE"
+              if [ "$OLD_DEPENDS_LINE" != "$DEPENDS_LINE" ]; then
+                echo "deps_changed=true" >> "$GITHUB_OUTPUT"
+              fi
+            else
+              echo "::warning::Computed depends=() line looked malformed, leaving PKGBUILD's existing depends=() untouched: $DEPENDS_LINE"
+            fi
+          fi
+        id: depends
+
       - name: Commit version bump back to repo
         if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
@@ -85,7 +130,11 @@ jobs:
           if git diff --staged --quiet; then
             echo "No PKGBUILD changes to commit."
           else
-            git commit -m "Update PKGBUILD (pkgver ${{ steps.release.outputs.version }})"
+            if [ "${{ steps.depends.outputs.deps_changed }}" = "true" ]; then
+              git commit -m "Update PKGBUILD (pkgver ${{ steps.release.outputs.version }}, depends changed)"
+            else
+              git commit -m "Update PKGBUILD (pkgver ${{ steps.release.outputs.version }})"
+            fi
             # Rebase onto whatever's currently on origin/main before pushing.
             # Prevents a race where a manual push to main between checkout
             # and this push would otherwise cause a rejected non-fast-forward
