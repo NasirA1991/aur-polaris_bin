@@ -1,16 +1,21 @@
 name: Deploy to AUR
+
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
+
 permissions:
   contents: write   # needed to commit the version bump back to this repo
+
 concurrency:
   group: deploy-to-aur
   cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,126 +26,169 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+
           JSON=$(curl -sf -H "Authorization: Bearer $GH_TOKEN" \
             https://api.github.com/repos/papi-ux/polaris/releases/latest)
+
           VERSION=$(echo "$JSON" | jq -r '.tag_name')
           CLEAN_VERSION="${VERSION#v}"
+
           if [ -z "$CLEAN_VERSION" ] || [ "$CLEAN_VERSION" = "null" ]; then
             echo "Could not determine latest version, aborting." >&2
             exit 1
           fi
+
           echo "version=$CLEAN_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Check if update is needed
         id: check
         run: |
           set -e
+
           CURRENT=$(grep -Po '^pkgver=\K.*' PKGBUILD)
           LATEST="${{ steps.release.outputs.version }}"
+
           echo "current=$CURRENT"
           echo "latest=$LATEST"
+
           if [ "$CURRENT" = "$LATEST" ]; then
             echo "update=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           echo "update=true" >> "$GITHUB_OUTPUT"
 
       - name: Update PKGBUILD + SHA256 + depends
+        id: depends
         if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -e
+
           VERSION="${{ steps.release.outputs.version }}"
+
           sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
-          # Only reset pkgrel to 1 on a genuine upstream version bump, so a
-          # manual workflow_dispatch re-run (e.g. for a packaging-only fix)
-          # doesn't stomp a deliberate pkgrel bump back to 1.
+
+          # Only reset pkgrel to 1 on a genuine upstream version bump.
+          # A manual workflow_dispatch can therefore be used for a
+          # packaging-only change without resetting pkgrel.
           if [ "${{ steps.check.outputs.update }}" = "true" ]; then
             sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
           fi
-          # download the actual release asset so we can hash it -- do NOT
-          # rely on sha256sums=('SKIP'), which disables integrity checking
-          # entirely and is why this had no verification before
+
+          # Download the actual release asset so we can hash it.
+          # Do NOT use sha256sums=('SKIP'), since that disables integrity
+          # verification entirely.
           FILENAME="Polaris-arch-x86_64-${VERSION}.pkg.tar.zst"
           URL="https://github.com/papi-ux/polaris/releases/download/v${VERSION}/Polaris-arch-x86_64.pkg.tar.zst"
+
           curl -fL --retry 3 -o "$FILENAME" "$URL"
+
           SHA256=$(sha256sum "$FILENAME" | awk '{print $1}')
+
           sed -i "s|^sha256sums=.*|sha256sums=('$SHA256')|" PKGBUILD
-          # update the source filename to match (versioned, so AUR helpers
-          # never reuse a stale cached file from a previous pkgver)
+
+          # Update the source filename to match.
+          # Versioned filenames prevent AUR helpers from reusing a stale
+          # cached source from a previous pkgver.
           sed -i "s|^source=(.*|source=(\"${FILENAME}::${URL}\")|" PKGBUILD
+
           sed -i "s|^noextract=(.*|noextract=(\"${FILENAME}\")|" PKGBUILD
-          # Match the FULL quoted argument (opening " through closing ") so
-          # nothing gets left dangling behind the replacement -- the prior
-          # pattern only matched up through ".zst" and left the original
-          # closing quote in place, producing a doubled `""` every run.
+
+          # Match the FULL quoted argument so we don't leave behind an
+          # extra quote when replacing the extraction filename.
           sed -i "s|bsdtar -xf \"[^\"]*\.pkg\.tar\.zst\"|bsdtar -xf \"${FILENAME}\"|" PKGBUILD
 
-          # --- Sync depends=() from upstream metadata, without trusting it blindly ---
+          # ---------------------------------------------------------------
+          # Sync depends=() from upstream metadata
+          # ---------------------------------------------------------------
           #
-          # Upstream's own .PKGINFO has already been shown to be incomplete: it
-          # did not declare libayatana-appindicator, even though
-          # `polaris --setup-host` fails without it (user-reported on 1.4.7).
-          # So we never let this step overwrite depends=() with ONLY what
-          # upstream declares. Instead we union:
-          #   1. whatever upstream's .PKGINFO says (`depend = ...` lines)
-          #   2. extra-depends.txt in this repo, a packager-maintained list of
-          #      known-required deps that upstream fails to declare
-          # and only ever add to that combined set -- extra-depends.txt is
-          # never auto-pruned, so a fix like today's isn't silently undone by
-          # the next scheduled run.
+          # Upstream's .PKGINFO contains the dependencies declared by the
+          # Polaris binary package.
+          #
+          # extra-depends.txt contains dependencies that we know are required
+          # but which upstream may fail to declare.
+          #
+          # The two lists are merged and deduplicated.
+          #
+          # extra-depends.txt is intentionally never auto-pruned, so a
+          # manually discovered dependency cannot silently disappear on the
+          # next upstream release.
+          # ---------------------------------------------------------------
 
-          # Ensure bsdtar is available on the runner -- it's present by
-          # default on Arch but NOT guaranteed on ubuntu-latest, which is
-          # why .PKGINFO extraction silently returned nothing before.
-          if ! command -v bsdtar >/dev/null 2>&1; then
-            echo "::notice::bsdtar not found on runner, installing libarchive-tools"
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq libarchive-tools
-          fi
+          echo "Extracting dependencies from upstream .PKGINFO..."
 
-          UPSTREAM_DEPS=$(bsdtar -xOf "$FILENAME" .PKGINFO 2> bsdtar_err.log \
-            | sed -n 's/^depend = //p')
+          # GNU tar on ubuntu-latest supports .tar.zst archives.
+          # Extract only the .PKGINFO file and collect all `depend =` entries.
+          UPSTREAM_DEPS=$(tar -xOf "$FILENAME" .PKGINFO |
+            sed -n 's/^depend = //p')
 
           if [ -z "$UPSTREAM_DEPS" ]; then
-            echo "::warning::Could not read .PKGINFO from the release asset; leaving depends=() untouched this run."
-            echo "bsdtar stderr was:"
-            cat bsdtar_err.log
-          else
-            EXTRA_DEPS=$(sed -e '/^\s*#/d' -e '/^\s*$/d' extra-depends.txt 2>/dev/null || true)
-            ALL_DEPS=$(printf '%s\n%s\n' "$UPSTREAM_DEPS" "$EXTRA_DEPS" | sed '/^\s*$/d' | sort -u)
-
-            DEPENDS_ARGS=()
-            while IFS= read -r dep; do
-              DEPENDS_ARGS+=("'$dep'")
-            done <<< "$ALL_DEPS"
-
-            DEPENDS_LINE="depends=(${DEPENDS_ARGS[*]})"
-
-            # Sanity check before writing: must look like a well-formed
-            # bash array assignment, or bail rather than risk a malformed
-            # PKGBUILD getting pushed to the AUR.
-            if [[ "$DEPENDS_LINE" =~ ^depends=\(\'.+\'\)$ ]]; then
-              OLD_DEPENDS_LINE=$(grep '^depends=' PKGBUILD || true)
-              sed -i "s|^depends=.*|$DEPENDS_LINE|" PKGBUILD
-              echo "Resolved depends: $DEPENDS_LINE"
-              if [ "$OLD_DEPENDS_LINE" != "$DEPENDS_LINE" ]; then
-                echo "deps_changed=true" >> "$GITHUB_OUTPUT"
-              fi
-            else
-              echo "::warning::Computed depends=() line looked malformed, leaving PKGBUILD's existing depends=() untouched: $DEPENDS_LINE"
-            fi
+            echo "::error::Could not read .PKGINFO or no dependencies were found in the release asset."
+            echo "::error::Refusing to update PKGBUILD with an unknown dependency list."
+            exit 1
           fi
 
-          rm -f bsdtar_err.log
-        id: depends
+          echo "Upstream dependencies:"
+          printf '%s\n' "$UPSTREAM_DEPS"
+
+          # Read packager-maintained dependencies.
+          EXTRA_DEPS=$(sed \
+            -e '/^[[:space:]]*#/d' \
+            -e '/^[[:space:]]*$/d' \
+            extra-depends.txt 2>/dev/null || true)
+
+          echo "Extra packager dependencies:"
+          printf '%s\n' "$EXTRA_DEPS"
+
+          # Merge both lists, remove blank lines, and deduplicate.
+          ALL_DEPS=$(printf '%s\n%s\n' "$UPSTREAM_DEPS" "$EXTRA_DEPS" |
+            sed '/^[[:space:]]*$/d' |
+            sort -u)
+
+          echo "Combined dependencies:"
+          printf '%s\n' "$ALL_DEPS"
+
+          # Convert the dependency list into a PKGBUILD array:
+          #
+          # depends=('avahi' 'bash' 'boost-libs' ...)
+          DEPENDS_ARGS=()
+
+          while IFS= read -r dep; do
+            DEPENDS_ARGS+=("'$dep'")
+          done <<< "$ALL_DEPS"
+
+          DEPENDS_LINE="depends=(${DEPENDS_ARGS[*]})"
+
+          # Sanity check before modifying PKGBUILD.
+          if [[ "$DEPENDS_LINE" =~ ^depends=\(\'.+\'\)$ ]]; then
+
+            OLD_DEPENDS_LINE=$(grep '^depends=' PKGBUILD || true)
+
+            sed -i "s|^depends=.*|$DEPENDS_LINE|" PKGBUILD
+
+            echo "Resolved depends:"
+            echo "$DEPENDS_LINE"
+
+            if [ "$OLD_DEPENDS_LINE" != "$DEPENDS_LINE" ]; then
+              echo "deps_changed=true" >> "$GITHUB_OUTPUT"
+            fi
+
+          else
+            echo "::error::Computed depends=() line looked malformed:"
+            echo "$DEPENDS_LINE"
+            exit 1
+          fi
 
       - name: Commit version bump back to repo
         if: steps.check.outputs.update == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           set -e
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add PKGBUILD
+
           if git diff --staged --quiet; then
             echo "No PKGBUILD changes to commit."
           else
@@ -149,10 +197,9 @@ jobs:
             else
               git commit -m "Update PKGBUILD (pkgver ${{ steps.release.outputs.version }})"
             fi
-            # Rebase onto whatever's currently on origin/main before pushing.
-            # Prevents a race where a manual push to main between checkout
-            # and this push would otherwise cause a rejected non-fast-forward
-            # push.
+
+            # Rebase onto whatever is currently on origin/main before
+            # pushing, preventing a race with a manual push to main.
             git pull --rebase origin main
             git push
           fi
