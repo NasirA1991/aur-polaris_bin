@@ -1,0 +1,14 @@
+ Packager-maintained list of runtime deps that upstream's own .PKGINFO
+# does NOT declare, but that are genuinely required.
+#
+# These are UNIONED with whatever the workflow extracts from upstream's
+# .PKGINFO at build time -- they are never removed automatically, only
+# added to. If a future upstream release starts declaring one of these
+# itself, it's harmless to leave it listed here too (just a no-op dupe,
+# deduped by `sort -u`).
+#
+# One package name per line. Lines starting with # are ignored.
+ 
+# Needed for `polaris --setup-host` (tray icon) -- upstream's .PKGINFO
+# does not declare it, confirmed via user bug report on 1.4.7.
+libayatana-appindicator
