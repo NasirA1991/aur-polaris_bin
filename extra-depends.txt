@@ -1,4 +1,4 @@
- Packager-maintained list of runtime deps that upstream's own .PKGINFO
+# Packager-maintained list of runtime deps that upstream's own .PKGINFO
 # does NOT declare, but that are genuinely required.
 #
 # These are UNIONED with whatever the workflow extracts from upstream's
